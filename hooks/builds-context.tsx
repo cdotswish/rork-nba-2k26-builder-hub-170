@@ -87,8 +87,17 @@ export const [BuildsProvider, useBuilds] = createContextHook<BuildsContextValue>
       try {
         console.log('buildsQuery: Starting to load builds');
         
+        // First check if server is responding
+        try {
+          const healthCheck = await apiRequest('/');
+          console.log('buildsQuery: Server health check passed:', healthCheck.status);
+        } catch (healthError) {
+          console.error('buildsQuery: Server health check failed:', healthError);
+          throw new Error('Server is not responding');
+        }
+        
         const headers = await getAuthHeaders();
-        const data = await apiRequest('/api/build', {
+        const data = await apiRequest('/api/builds', {
           headers,
         });
         
@@ -111,7 +120,7 @@ export const [BuildsProvider, useBuilds] = createContextHook<BuildsContextValue>
         console.log('reviewsQuery: Starting to load reviews');
         
         const headers = await getAuthHeaders();
-        const data = await apiRequest('/api/review', {
+        const data = await apiRequest('/api/reviews', {
           headers,
         });
         
@@ -133,7 +142,7 @@ export const [BuildsProvider, useBuilds] = createContextHook<BuildsContextValue>
   const createBuildMutation = useMutation({
     mutationFn: async (buildData: Omit<Build, 'id' | 'userId' | 'userName' | 'rating' | 'reviewCount' | 'createdAt' | 'updatedAt'>) => {
       const headers = await getAuthHeaders();
-      const data = await apiRequest('/api/build', {
+      const data = await apiRequest('/api/builds', {
         method: 'POST',
         headers,
         body: JSON.stringify(buildData),
@@ -151,7 +160,7 @@ export const [BuildsProvider, useBuilds] = createContextHook<BuildsContextValue>
   const updateBuildMutation = useMutation({
     mutationFn: async ({ id, buildData }: { id: string; buildData: Partial<Build> }) => {
       const headers = await getAuthHeaders();
-      const data = await apiRequest(`/api/build/${id}`, {
+      const data = await apiRequest(`/api/builds/${id}`, {
         method: 'PUT',
         headers,
         body: JSON.stringify(buildData),
@@ -169,7 +178,7 @@ export const [BuildsProvider, useBuilds] = createContextHook<BuildsContextValue>
   const deleteBuildMutation = useMutation({
     mutationFn: async (id: string) => {
       const headers = await getAuthHeaders();
-      await apiRequest(`/api/build/${id}`, {
+      await apiRequest(`/api/builds/${id}`, {
         method: 'DELETE',
         headers,
       });
@@ -186,7 +195,7 @@ export const [BuildsProvider, useBuilds] = createContextHook<BuildsContextValue>
   const createReviewMutation = useMutation({
     mutationFn: async (reviewData: Omit<Review, 'id' | 'userId' | 'userName' | 'createdAt'>) => {
       const headers = await getAuthHeaders();
-      const data = await apiRequest('/api/review', {
+      const data = await apiRequest('/api/reviews', {
         method: 'POST',
         headers,
         body: JSON.stringify(reviewData),
