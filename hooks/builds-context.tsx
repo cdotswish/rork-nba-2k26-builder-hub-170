@@ -35,21 +35,35 @@ const apiRequest = async (endpoint: string, options: RequestInit = {}) => {
     if (contentType && contentType.includes('application/json')) {
       data = await response.json();
     } else {
+      // Get the raw text first
       const text = await response.text();
-      console.log(`Non-JSON response:`, text);
-      if (!response.ok) {
-        throw new Error(`Server error: ${response.status} - ${text}`);
+      console.log(`Non-JSON response (${contentType}):`, text.substring(0, 200));
+      
+      // Check if it's HTML (common for error pages)
+      if (contentType && contentType.includes('text/html')) {
+        console.error('Received HTML instead of JSON - server may be down or URL incorrect');
+        throw new Error('Server returned HTML instead of JSON - please check server status');
       }
-      // Try to parse as JSON anyway
-      try {
-        data = JSON.parse(text);
-      } catch {
+      
+      // Only try to parse as JSON if it looks like JSON
+      if (text.trim().startsWith('{') || text.trim().startsWith('[')) {
+        try {
+          data = JSON.parse(text);
+        } catch (parseError) {
+          console.error('Failed to parse response as JSON:', parseError);
+          throw new Error(`Invalid JSON response from server`);
+        }
+      } else {
+        // Not JSON at all
+        if (!response.ok) {
+          throw new Error(`Server error: ${response.status}`);
+        }
         data = { message: text };
       }
     }
 
     if (!response.ok) {
-      throw new Error(data.error || data.message || `Request failed: ${response.status}`);
+      throw new Error(data?.error || data?.message || `Request failed: ${response.status}`);
     }
 
     return data;
@@ -60,6 +74,10 @@ const apiRequest = async (endpoint: string, options: RequestInit = {}) => {
       }
       if (error.message.includes('Load failed') || error.message.includes('fetch')) {
         throw new Error('Network error - cannot connect to server');
+      }
+      if (error.message.includes('JSON')) {
+        // Already a JSON error, pass it through
+        throw error;
       }
     }
     throw error;
