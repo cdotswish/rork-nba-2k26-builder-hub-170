@@ -8,6 +8,37 @@ import { useAuth } from '@/hooks/auth-context';
 
 const API_BASE_URL = 'https://nba2k26-backend.onrender.com';
 
+// Helper function to check server health
+const checkServerHealth = async (): Promise<boolean> => {
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 second timeout for health check
+    
+    const response = await fetch(`${API_BASE_URL}/health`, {
+      signal: controller.signal,
+    });
+    
+    clearTimeout(timeoutId);
+    
+    if (!response.ok) {
+      console.error('Server health check failed with status:', response.status);
+      return false;
+    }
+    
+    const contentType = response.headers.get('content-type');
+    if (!contentType || !contentType.includes('application/json')) {
+      console.error('Server health check returned non-JSON response');
+      return false;
+    }
+    
+    const data = await response.json();
+    return data.status === 'OK';
+  } catch (error) {
+    console.error('Server health check failed:', error);
+    return false;
+  }
+};
+
 // Helper function to make API requests with proper error handling
 const apiRequest = async (endpoint: string, options: RequestInit = {}) => {
   const url = `${API_BASE_URL}${endpoint}`;
@@ -15,7 +46,7 @@ const apiRequest = async (endpoint: string, options: RequestInit = {}) => {
   
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+    const timeoutId = setTimeout(() => controller.abort(), 15000); // 15 second timeout
     
     const response = await fetch(url, {
       headers: {
@@ -37,12 +68,21 @@ const apiRequest = async (endpoint: string, options: RequestInit = {}) => {
     } else {
       // Get the raw text first
       const text = await response.text();
-      console.log(`Non-JSON response (${contentType}):`, text.substring(0, 200));
+      console.log(`Non-JSON response (${contentType}):`, text.substring(0, 500));
       
-      // Check if it's HTML (common for error pages)
-      if (contentType && contentType.includes('text/html')) {
-        console.error('Received HTML instead of JSON - server may be down or URL incorrect');
+      // Check if it's HTML (common for error pages or when server is down)
+      if (!contentType || contentType.includes('text/html') || text.trim().startsWith('<!') || text.trim().startsWith('<')) {
+        console.error('ERROR: Received HTML instead of JSON - server may be down or URL incorrect');
+        console.error('Response preview:', text.substring(0, 200));
         throw new Error('Server returned HTML instead of JSON - please check server status');
+      }
+      
+      // Check if it's plain text error
+      if (contentType && contentType.includes('text/plain')) {
+        console.error('Received plain text response:', text);
+        if (!response.ok) {
+          throw new Error(text || `Server error: ${response.status}`);
+        }
       }
       
       // Only try to parse as JSON if it looks like JSON
@@ -51,18 +91,29 @@ const apiRequest = async (endpoint: string, options: RequestInit = {}) => {
           data = JSON.parse(text);
         } catch (parseError) {
           console.error('Failed to parse response as JSON:', parseError);
+          console.error('Text that failed to parse:', text.substring(0, 100));
           throw new Error(`Invalid JSON response from server`);
         }
       } else {
         // Not JSON at all
         if (!response.ok) {
-          throw new Error(`Server error: ${response.status}`);
+          throw new Error(`Server error: ${response.status} - ${text.substring(0, 100)}`);
         }
         data = { message: text };
       }
     }
 
     if (!response.ok) {
+      // Handle specific error codes
+      if (response.status === 404) {
+        throw new Error('API endpoint not found - please check server configuration');
+      }
+      if (response.status === 500) {
+        throw new Error('Server internal error - please try again later');
+      }
+      if (response.status === 503) {
+        throw new Error('Server is temporarily unavailable');
+      }
       throw new Error(data?.error || data?.message || `Request failed: ${response.status}`);
     }
 
@@ -72,15 +123,13 @@ const apiRequest = async (endpoint: string, options: RequestInit = {}) => {
       if (error.name === 'AbortError') {
         throw new Error('Request timeout - server is not responding');
       }
-      if (error.message.includes('Load failed') || error.message.includes('fetch')) {
-        throw new Error('Network error - cannot connect to server');
+      if (error.message.includes('Load failed') || error.message.includes('fetch') || error.message.includes('NetworkError')) {
+        throw new Error('Network error - cannot connect to server. Please check your connection.');
       }
-      if (error.message.includes('JSON')) {
-        // Already a JSON error, pass it through
-        throw error;
-      }
+      // Pass through our custom errors
+      throw error;
     }
-    throw error;
+    throw new Error('Unknown error occurred');
   }
 };
 
@@ -122,6 +171,13 @@ export const [BuildsProvider, useBuilds] = createContextHook<BuildsContextValue>
       try {
         console.log('buildsQuery: Starting to load builds');
         
+        // First check if server is healthy
+        const isHealthy = await checkServerHealth();
+        if (!isHealthy) {
+          console.error('buildsQuery: Server health check failed');
+          throw new Error('Server is not responding correctly');
+        }
+        
         const headers = await getAuthHeaders();
         const data = await apiRequest('/api/builds', {
           headers,
@@ -130,14 +186,15 @@ export const [BuildsProvider, useBuilds] = createContextHook<BuildsContextValue>
         console.log('buildsQuery: Loaded builds from server, count:', data.builds?.length || data.length || 0);
         return data.builds || data || [];
       } catch (error) {
-        console.error('buildsQuery: Error loading builds:', error);
-        // Return empty array instead of throwing to prevent app crashes
-        return [];
+        console.error('ERROR buildsQuery: Error loading builds:', error);
+        throw error; // Re-throw to trigger retry
       }
     },
     enabled: true, // Always enabled, not just when authenticated
-    retry: 3, // Retry failed requests
-    retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 30000), // Exponential backoff
+    retry: 2, // Retry failed requests but not too many times
+    retryDelay: (attemptIndex) => Math.min(2000 * 2 ** attemptIndex, 10000), // Exponential backoff starting at 2s
+    staleTime: 30000, // Consider data stale after 30 seconds
+    gcTime: 5 * 60 * 1000, // Keep in cache for 5 minutes (formerly cacheTime)
   });
   
   // Load reviews from server
@@ -147,6 +204,13 @@ export const [BuildsProvider, useBuilds] = createContextHook<BuildsContextValue>
       try {
         console.log('reviewsQuery: Starting to load reviews');
         
+        // First check if server is healthy
+        const isHealthy = await checkServerHealth();
+        if (!isHealthy) {
+          console.error('reviewsQuery: Server health check failed');
+          throw new Error('Server is not responding correctly');
+        }
+        
         const headers = await getAuthHeaders();
         const data = await apiRequest('/api/reviews', {
           headers,
@@ -155,14 +219,15 @@ export const [BuildsProvider, useBuilds] = createContextHook<BuildsContextValue>
         console.log('reviewsQuery: Loaded reviews from server, count:', data.reviews?.length || data.length || 0);
         return data.reviews || data || [];
       } catch (error) {
-        console.error('reviewsQuery: Error loading reviews:', error);
-        // Return empty array instead of throwing to prevent app crashes
-        return [];
+        console.error('ERROR reviewsQuery: Error loading reviews:', error);
+        throw error; // Re-throw to trigger retry
       }
     },
     enabled: true, // Always enabled, not just when authenticated
-    retry: 3, // Retry failed requests
-    retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 30000), // Exponential backoff
+    retry: 2, // Retry failed requests but not too many times
+    retryDelay: (attemptIndex) => Math.min(2000 * 2 ** attemptIndex, 10000), // Exponential backoff starting at 2s
+    staleTime: 30000, // Consider data stale after 30 seconds
+    gcTime: 5 * 60 * 1000, // Keep in cache for 5 minutes (formerly cacheTime)
   });
   
 
