@@ -27,40 +27,57 @@ const apiRequest = async (endpoint: string, options: RequestInit = {}) => {
   const url = `${API_BASE_URL}${endpoint}`;
   console.log(`API Request: ${options.method || 'GET'} ${url}`);
   
-  const response = await fetch(url, {
-    headers: {
-      'Content-Type': 'application/json',
-      ...options.headers,
-    },
-    ...options,
-  });
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+    
+    const response = await fetch(url, {
+      headers: {
+        'Content-Type': 'application/json',
+        ...options.headers,
+      },
+      signal: controller.signal,
+      ...options,
+    });
+    
+    clearTimeout(timeoutId);
+    console.log(`API Response: ${response.status} ${response.statusText}`);
+    
+    let data;
+    const contentType = response.headers.get('content-type');
+    
+    if (contentType && contentType.includes('application/json')) {
+      data = await response.json();
+    } else {
+      const text = await response.text();
+      console.log(`Non-JSON response:`, text);
+      if (!response.ok) {
+        throw new Error(`Server error: ${response.status} - ${text}`);
+      }
+      // Try to parse as JSON anyway
+      try {
+        data = JSON.parse(text);
+      } catch {
+        data = { message: text };
+      }
+    }
 
-  console.log(`API Response: ${response.status} ${response.statusText}`);
-  
-  let data;
-  const contentType = response.headers.get('content-type');
-  
-  if (contentType && contentType.includes('application/json')) {
-    data = await response.json();
-  } else {
-    const text = await response.text();
-    console.log(`Non-JSON response:`, text);
     if (!response.ok) {
-      throw new Error(`Server error: ${response.status} - ${text}`);
+      throw new Error(data.error || data.message || `Request failed: ${response.status}`);
     }
-    // Try to parse as JSON anyway
-    try {
-      data = JSON.parse(text);
-    } catch {
-      data = { message: text };
+
+    return data;
+  } catch (error) {
+    if (error instanceof Error) {
+      if (error.name === 'AbortError') {
+        throw new Error('Request timeout - server is not responding');
+      }
+      if (error.message.includes('Load failed') || error.message.includes('fetch')) {
+        throw new Error('Network error - cannot connect to server');
+      }
     }
+    throw error;
   }
-
-  if (!response.ok) {
-    throw new Error(data.error || data.message || `Request failed: ${response.status}`);
-  }
-
-  return data;
 };
 
 export const [AuthProvider, useAuth] = createContextHook<AuthContextValue>(() => {
